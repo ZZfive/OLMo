@@ -54,15 +54,15 @@ __all__ = [
     "CheckpointType",
 ]
 
-C = TypeVar("C", bound="BaseConfig")
+C = TypeVar("C", bound="BaseConfig")  # TypeVar用于声明泛型类型变量，C的类型约束是BaseConfig，表示C必须是Baseconfig类或其子类
 D = TypeVar("D", bound="DictConfig|ListConfig")
 
 
 class BaseConfig:
     @classmethod
-    def _register_resolvers(cls, validate_paths: bool = True):
+    def _register_resolvers(cls, validate_paths: bool = True):  # 注册一组解析器
         # Expands path globs into a list.
-        def path_glob(*paths) -> List[str]:
+        def path_glob(*paths) -> List[str]:  # 扩展路径通配符
             out = []
             for path in paths:
                 matches = sorted(glob(path))
@@ -72,7 +72,7 @@ class BaseConfig:
             return out
 
         # Chooses the first path in the arguments that exists.
-        def path_choose(*paths) -> str:
+        def path_choose(*paths) -> str:  # 选择存在地路径
             from .util import is_url
 
             for path in paths:
@@ -84,7 +84,7 @@ class BaseConfig:
                 return ""
 
         # Finds the latest checkpoint in a folder.
-        def path_last_checkpoint(path) -> str:
+        def path_last_checkpoint(path) -> str:  # 查找最新的checkpoint
             from .util import find_latest_checkpoint
 
             latest_checkpoint = find_latest_checkpoint(path)
@@ -145,6 +145,7 @@ class BaseConfig:
         """Save to a YAML file."""
         om.save(config=self, f=str(path))
 
+    # 将配置对象转换为字典类型数据，可可选择性地排除一些字段
     def asdict(self, exclude: Optional[Iterable[str]] = None) -> Dict[str, Any]:
         out = asdict(self)  # type: ignore
         if exclude is not None:
@@ -154,6 +155,7 @@ class BaseConfig:
         return out
 
 
+# LN层类型
 class LayerNormType(StrEnum):
     default = "default"
     """
@@ -177,12 +179,14 @@ class LayerNormType(StrEnum):
     """
 
 
+# 激活函数类型
 class ActivationType(StrEnum):
     gelu = "gelu"
     relu = "relu"
     swiglu = "swiglu"
 
 
+# transformer block类型
 class BlockType(StrEnum):
     sequential = "sequential"
     parallel = "parallel"
@@ -194,6 +198,7 @@ class BlockType(StrEnum):
     """
 
 
+# 模型权重参数初始化方式
 class InitFnType(StrEnum):
     mitchell = "mitchell"
     """
@@ -248,7 +253,7 @@ class ModelConfig(BaseConfig):
     The number of layers/blocks.
     """
 
-    mlp_ratio: int = 4
+    mlp_ratio: int = 4  # 用于控制MLP中隐藏层的大小与transformer block隐藏层大小的比例
     """
     The ratio of the inner MLP dimensionality to ``d_model``.
     This is only used when ``mlp_hidden_size`` is not set.
@@ -429,11 +434,13 @@ class ModelConfig(BaseConfig):
     """
 
 
+# 优化器类型
 class OptimizerType(StrEnum):
     lionw = "lionw"
     adamw = "adamw"
 
 
+# 优化器配置
 @dataclass
 class OptimizerConfig(BaseConfig):
     name: OptimizerType = OptimizerType.lionw
@@ -472,6 +479,7 @@ class OptimizerConfig(BaseConfig):
         return new_config
 
 
+# scheduler类型
 class SchedulerType(StrEnum):
     cosine_with_warmup = "cosine_with_warmup"
     linear_with_warmup = "linear_with_warmup"
