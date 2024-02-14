@@ -79,6 +79,8 @@ def activation_checkpoint_function(cfg: ModelConfig):
     preserve_rng_state = (
         (cfg.attention_dropout == 0.0) and (cfg.embedding_dropout == 0.0) and (cfg.residual_dropout == 0.0)
     )
+    # 用于模型前向传播过程中实现内存优化，特别是对于内存需求较大的模型和长序列数据
+    # 主要作用是将模型的某些部分划分为多个块，并在每个块之间进行检查点操作，以减少内存的使用量
     from torch.utils.checkpoint import checkpoint
 
     return partial(
@@ -88,6 +90,7 @@ def activation_checkpoint_function(cfg: ModelConfig):
     )
 
 
+# 提供一个灵活的缓存结构，以存储模型中的一些中间状态或计算结果
 class BufferCache(dict, MutableMapping[str, torch.Tensor]):
     """
     Cache for attention biases and other things that would normally be stored as buffers.
@@ -114,11 +117,12 @@ class Dropout(nn.Dropout):
             return F.dropout(input, self.p, self.training, self.inplace)
 
 
+# LayerNorm的基础类
 class LayerNormBase(nn.Module):
     def __init__(
         self,
         config: ModelConfig,
-        *,
+        *,  # 此处的*表示前面参数是必须的，后面的参数都是关键字参数，不能作为位置参数
         size: Optional[int] = None,
         elementwise_affine: Optional[bool] = True,
         eps: float = 1e-05,
@@ -140,7 +144,7 @@ class LayerNormBase(nn.Module):
             self.register_parameter("bias", None)
             self.register_parameter("weight", None)
 
-    @abstractmethod
+    @abstractmethod  # 声明forward为抽象方法，子类必须实现不然不能实例化对象
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         raise NotImplementedError
 
@@ -199,7 +203,7 @@ class LayerNorm(LayerNormBase):
                 self._cast_if_autocast_enabled(self.weight) if self.weight is not None else self.weight
             )
             downcast_bias = self._cast_if_autocast_enabled(self.bias) if self.bias is not None else self.bias
-            with torch.autocast(enabled=False, device_type=module_device.type):
+            with torch.autocast(enabled=False, device_type=module_device.type):  # 禁用自动混合精度，用低精度
                 return F.layer_norm(
                     downcast_x, self.normalized_shape, weight=downcast_weight, bias=downcast_bias, eps=self.eps
                 )
@@ -270,6 +274,7 @@ class RMSLayerNorm(LayerNormBase):
             return x
 
 
+# RoPE编码
 class RotaryEmbedding(nn.Module):
     """
     [Rotary positional embeddings (RoPE)](https://arxiv.org/abs/2104.09864).
@@ -288,16 +293,16 @@ class RotaryEmbedding(nn.Module):
             and (pos_cos := self.__cache.get("rope_pos_cos")) is not None
             and pos_sin.shape[-2] >= seq_len
             and pos_cos.shape[-2] >= seq_len
-        ):
+        ):  # 使用已计算后缓存的位置坐标
             if pos_sin.device != device:
                 pos_sin = pos_sin.to(device)
                 self.__cache["rope_pos_sin"] = pos_sin
             if pos_cos.device != device:
                 pos_cos = pos_cos.to(device)
                 self.__cache["rope_pos_cos"] = pos_cos
-            return pos_sin[:, :, :seq_len, :], pos_cos[:, :, :seq_len, :]
+            return pos_sin[:, :, :seq_len, :], pos_cos[:, :, :seq_len, :]  # 直接返回
 
-        with torch.autocast(device.type, enabled=False):
+        with torch.autocast(device.type, enabled=False):  # 重新计算
             dim = self.config.d_model // self.config.n_heads
             inv_freq = 1.0 / (10000 ** (torch.arange(0, dim, 2, device=device, dtype=torch.float) / dim))
             seq = torch.arange(seq_len, device=device, dtype=torch.float)
@@ -354,9 +359,9 @@ class Activation(nn.Module):
     @classmethod
     def build(cls, config: ModelConfig) -> Activation:
         if config.activation_type == ActivationType.gelu:
-            return cast(Activation, GELU(approximate="none"))
+            return cast(Activation, GELU(approximate="none"))  # 将初始化的GELU对象转换为Activation类型
         elif config.activation_type == ActivationType.relu:
-            return cast(Activation, ReLU(inplace=False))
+            return cast(Activation, ReLU(inplace=False))  # 将初始化的ReLU对象转换为Activation类型
         elif config.activation_type == ActivationType.swiglu:
             return SwiGLU(config)
         else:
@@ -389,8 +394,8 @@ def causal_attention_bias(seq_len: int, device: torch.device) -> torch.FloatTens
     att_bias = torch.triu(
         torch.ones(seq_len, seq_len, device=device, dtype=torch.float),
         diagonal=1,
-    )
-    att_bias.masked_fill_(att_bias == 1, torch.finfo(att_bias.dtype).min)
+    )  # 构建一个上三角矩阵，对角线上面所有元素为1，对角线及下面所有元素为0
+    att_bias.masked_fill_(att_bias == 1, torch.finfo(att_bias.dtype).min)  # 将att_bias中为1的元素替换为torch.float数据类型能取到的最小值
     return att_bias.view(1, 1, seq_len, seq_len)  # type: ignore
 
 
@@ -421,6 +426,7 @@ def alibi_attention_bias(seq_len: int, config: ModelConfig, device: torch.device
     return alibi_bias * (1.0 / (2 ** m.view(1, config.n_heads, 1, 1)))  # type: ignore
 
 
+# 基础的OlmoBlock
 class OlmoBlock(nn.Module):
     """
     A base class for transformer block implementations.
@@ -474,6 +480,7 @@ class OlmoBlock(nn.Module):
         if self.config.rope:
             self.rotary_emb = RotaryEmbedding(config, self.__cache)
 
+    # 重置权重参数
     def reset_parameters(self):
         if self.k_norm is not None:
             self.k_norm.reset_parameters()
@@ -575,7 +582,7 @@ class OlmoBlock(nn.Module):
             k = torch.cat((past_key, k), dim=-2)
             v = torch.cat((past_value, v), dim=-2)
 
-        present = (k, v) if use_cache else None
+        present = (k, v) if use_cache else None  # 此处的present将左右后续的layer_past
         query_len, key_len = q.shape[-2], k.shape[-2]  # could be different if layer_past not None
 
         if self.config.rope:
@@ -964,7 +971,7 @@ class OlmoBlockGroup(nn.ModuleList):
         use_cache: bool = False,
     ) -> Tuple[torch.Tensor, Optional[List[Tuple[torch.Tensor, torch.Tensor]]]]:
         attn_key_values: Optional[List[Tuple[torch.Tensor, torch.Tensor]]] = [] if use_cache else None
-        for block_idx, block in enumerate(self):
+        for block_idx, block in enumerate(self):  # 此处的self即为当前group，包含多个olmoblock
             layer_past = None if layers_past is None else layers_past[block_idx]
             block_idx += self.layer_offset
             if (
@@ -1059,7 +1066,7 @@ class Olmo(nn.Module):
         else:
             self.transformer.update({"blocks": nn.ModuleList(blocks)})
 
-        if not (self.config.alibi or self.config.rope):
+        if not (self.config.alibi or self.config.rope):  #  如果alibi和rope都未设置，就使用绝对位置编码
             self.transformer.update(
                 {"wpe": nn.Embedding(config.max_sequence_length, config.d_model, device=config.init_device)}
             )
