@@ -1414,7 +1414,7 @@ class Olmo(nn.Module):
         return sum(p.numel() for _, p in params)
 
     @property
-    def num_fwd_flops(self):
+    def num_fwd_flops(self):  # 计算olmo模型前向计算所需浮点运算次数
         if self.__num_fwd_flops:
             return self.__num_fwd_flops
         n_params = self.num_params()
@@ -1605,7 +1605,7 @@ class Olmo(nn.Module):
 
     def _make_state_dict_compatible(
         self, state_dict: Dict[str, torch.Tensor]
-    ) -> Tuple[Dict[str, torch.Tensor], Dict[str, Set[str]]]:
+    ) -> Tuple[Dict[str, torch.Tensor], Dict[str, Set[str]]]:  # 模型权重key兼容
         """
         Handles some cases where the state dict is valid yet may need to be transformed in order to
         be loaded.

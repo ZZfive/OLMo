@@ -10,6 +10,7 @@ from .util import StrEnum
 __all__ = ["init_weights", "ModuleType"]
 
 
+# 定义模型类别的枚举类
 class ModuleType(StrEnum):
     in_module = "in"
     out_module = "out"
@@ -17,9 +18,10 @@ class ModuleType(StrEnum):
     final_out = "final_out"
 
 
+# 对线性层和embedding层进行参数初始化
 def init_weights(
     config: ModelConfig,
-    module: Union[nn.Linear, nn.Embedding],
+    module: Union[nn.Linear, nn.Embedding],  # 待初始化的模块，模块类型是nn.Linear或nn.Embedding
     d: Optional[int] = None,
     layer_id: Optional[int] = None,
     std_factor: float = 1.0,
@@ -49,10 +51,11 @@ def init_weights(
             std = std / math.sqrt(2 * (layer_id + 1))
         nn.init.trunc_normal_(module.weight, mean=0.0, std=std, a=-3 * std, b=3 * std)
     elif config.init_fn == InitFnType.kaiming_normal:
+        # 使用 Kaiming 正态分布初始化
         nn.init.kaiming_normal_(module.weight, nonlinearity="relu")
     elif config.init_fn == InitFnType.fan_in:
         std = std_factor / math.sqrt(d)
-        nn.init.normal_(module.weight, mean=0.0, std=std)
+        nn.init.normal_(module.weight, mean=0.0, std=std)  # 以正态分布的方式来初始化权重参数，即从一个标准正态分布（均值为0，标准差为1）中随机地选择初始值
     elif config.init_fn == InitFnType.full_megatron:
         if type_of_module is None:
             raise RuntimeError(f"When using the {InitFnType.full_megatron} init, every module must have a type.")
@@ -76,6 +79,8 @@ def init_weights(
             std = config.d_model**-0.5
         else:
             raise RuntimeError(f"Unknown module type '{type_of_module}'")
+        # 以截断正态分布的方式来初始化权重参数，即从一个截断的正态分布中随机地选择初始值。这种初始化方法的好处是可以避免
+        # 权重值过大或过小有助于更快地训练模型，并且有助于防止梯度消失或梯度爆炸的问题
         nn.init.trunc_normal_(
             module.weight,
             mean=0.0,
@@ -86,7 +91,7 @@ def init_weights(
     else:
         raise NotImplementedError(config.init_fn)
 
-    if isinstance(module, nn.Linear):
+    if isinstance(module, nn.Linear):  # 针对linear层进一步处理
         if module.bias is not None:
             nn.init.zeros_(module.bias)
 
