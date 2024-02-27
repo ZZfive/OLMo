@@ -60,7 +60,7 @@ D = TypeVar("D", bound="DictConfig|ListConfig")
 
 class BaseConfig:
     @classmethod
-    def _register_resolvers(cls, validate_paths: bool = True):  # 注册一组解析器
+    def _register_resolvers(cls, validate_paths: bool = True):  # 注册一组解析器，用于解析配置文件中特定字段字段
         # Expands path globs into a list.
         def path_glob(*paths) -> List[str]:  # 扩展路径通配符
             out = []
@@ -95,7 +95,7 @@ class BaseConfig:
                     return ""
             else:
                 return str(latest_checkpoint)
-
+        # 注册
         om.register_new_resolver("path.glob", path_glob, replace=True)
         om.register_new_resolver("path.choose", path_choose, replace=True)
         om.register_new_resolver("path.last_checkpoint", path_last_checkpoint, replace=True)
@@ -128,15 +128,15 @@ class BaseConfig:
     ) -> C:
         """Load from a YAML file."""
         cls._register_resolvers(validate_paths=validate_paths)
-        schema = om.structured(cls)
+        schema = om.structured(cls)  # 将给定的类对象转换为对应的配置结构体
         try:
-            raw = om.load(str(path))
+            raw = om.load(str(path))  # 从配置文件中加载具体配置信息
             if key is not None:
                 raw = raw[key]  # type: ignore
             raw = cls.update_legacy_settings(raw)
             conf = om.merge(schema, raw)
             if overrides:
-                conf = om.merge(conf, om.from_dotlist(overrides))
+                conf = om.merge(conf, om.from_dotlist(overrides))  # 覆盖原始配置中与新配置对象中相同键的值，并添加新的键值对到原始配置中
             return cast(C, om.to_object(conf))
         except OmegaConfBaseException as e:
             raise OlmoConfigurationError(str(e))
