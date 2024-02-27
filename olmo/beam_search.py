@@ -27,6 +27,7 @@ __all__ = [
 ]
 
 StateType = Dict[str, torch.Tensor]
+# 分别定义带时间步和不带时间步的两种函数注解，函数参数和返回值为可调用对象类型
 StepFunctionTypeWithTimestep = Callable[[torch.Tensor, StateType, int], Tuple[torch.Tensor, StateType]]
 StepFunctionTypeNoTimestep = Callable[[torch.Tensor, StateType], Tuple[torch.Tensor, StateType]]
 
@@ -95,7 +96,7 @@ class Sampler:
         self, log_probs: torch.Tensor, beam_size: int, state: StateType
     ) -> Tuple[torch.Tensor, torch.Tensor, StateType]:
         del state
-        selected_log_probs, selected_indices = torch.topk(log_probs, beam_size, dim=-1)
+        selected_log_probs, selected_indices = torch.topk(log_probs, beam_size, dim=-1)  # 默认实现，每次从log_probs选择概率最高的beam_size个最大值的索引
         return selected_log_probs, selected_indices, {}
 
 
@@ -127,7 +128,7 @@ class MultinomialSampler(Sampler):
     def __init__(
         self,
         temperature: float = 1.0,
-        with_replacement: bool = False,
+        with_replacement: bool = False,  # 采样时是否允许有放回采样
     ) -> None:
         self.temperature = temperature
         self.with_replacement = with_replacement
@@ -139,9 +140,9 @@ class MultinomialSampler(Sampler):
             _probabilities = torch.nn.functional.softmax(log_probs / self.temperature, dim=-1)
         else:
             _probabilities = log_probs.exp()
-
+        # 从调整后的概率向量中采样最终的索引
         selected_indices = torch.multinomial(_probabilities, per_node_beam_size, replacement=self.with_replacement)
-
+        # torch.gather() 函数的作用是从输入张量 input 中根据指定的维度 dim 和索引 index，按照索引指定的位置，将对应的元素收集起来组成一个新的张量，并返回这个新的张量
         return torch.gather(log_probs, 1, selected_indices), selected_indices, state
 
 
@@ -177,7 +178,7 @@ class TopKSampler(Sampler):
             )
 
         # shape (both): (batch_size, k)
-        top_k_log_probs, top_k_indices = log_probs.topk(self.k, dim=-1)
+        top_k_log_probs, top_k_indices = log_probs.topk(self.k, dim=-1)  # 先从全部概率中选出k个概率最大的
 
         # Apply temperature if necessary.
         # shape: (batch_size, k)
@@ -186,20 +187,20 @@ class TopKSampler(Sampler):
 
         # Re-normalize the subset.
         # shape: (batch_size, k)
-        normalized_top_k_probs = torch.nn.functional.softmax(top_k_log_probs, dim=-1)
+        normalized_top_k_probs = torch.nn.functional.softmax(top_k_log_probs, dim=-1)  # 在选出来的k个概率范围类再计算一个softmanx
 
         # Sample from the re-normalized subset.
         # NOTE: These indices are not indices into `log_probs`, they are indices into `top_k_log_probs`.
         # shape: (batch_size, per_node_beam_size)
         sampled_indices = torch.multinomial(
             normalized_top_k_probs, per_node_beam_size, replacement=self.with_replacement
-        )
+        )  # 此时的sampled_indices是top_k_probs中的索引，不是log_probs的索引
 
         # Convert `sampled_indices` back to indices in the original `log_probs` tensor.
         # shape: (batch_size, per_node_beam_size)
-        indices = top_k_indices.gather(-1, sampled_indices)
+        indices = top_k_indices.gather(-1, sampled_indices)  # 从top_k_indices中找出目标索引
 
-        return log_probs.gather(1, indices), indices, state
+        return log_probs.gather(1, indices), indices, state  # 使用gether基于索引从log_probs中抽取对应概率元素组成新张量返回
 
 
 class TopPSampler(Sampler):
@@ -248,11 +249,11 @@ class TopPSampler(Sampler):
             _log_probs = log_probs
 
         # Sort the probabilities in descending order to then find cumulative sum
-        log_probs_descending, sorting_indices = torch.sort(_log_probs, descending=True)
+        log_probs_descending, sorting_indices = torch.sort(_log_probs, descending=True)  # 降序排序，便于后续计算概率累计和
 
         # shape: (batch_size, num_classes)
         probabilities_descending = log_probs_descending.exp()
-        probabilities_summed = torch.cumsum(probabilities_descending, dim=-1)
+        probabilities_summed = torch.cumsum(probabilities_descending, dim=-1)  # 计算概率累计和
 
         # Create a mask for filtering out probabilities that don't make the top `p`.
         # shape: (batch_size, num_classes)
@@ -260,12 +261,12 @@ class TopPSampler(Sampler):
 
         # We want to include the first index where probabilities_summed >= p, so we shift over one.
         exclusion_mask[..., 1:] = exclusion_mask[..., :-1].clone()
-        exclusion_mask[..., 0] = False
+        exclusion_mask[..., 0] = False  # 要用到大于p之前所有的数据，需要保留的前n个位置在mask中是False，后续不保留的位置在mask中是True
 
         # Make sure there's at least `per_node_beam_size` options to be selected.
         if not self.with_replacement:
             exclusion_mask[..., :per_node_beam_size] = False
-
+        # 在exclusion_mask中需要要被排除的索引值是True，即将需要被排除位置上的概率值置为最小值
         log_probs_descending[exclusion_mask] = torch.finfo(log_probs.dtype).min
 
         # Now re-normalized the included log probs.
@@ -399,7 +400,7 @@ class GumbelSampler(Sampler):
         `phi` should have shape `(batch_size, num_classes)`.
         """
         return -torch.log(-torch.log(torch.rand_like(phi))) + phi
-
+  
     def gumbel_with_max(self, phi, T) -> torch.Tensor:
         """
         Sample `Gumbel(phi)` conditioned on the maximum value being equal to `T`.
@@ -491,6 +492,7 @@ class LengthNormalizedSequenceLogProbabilityScorer(FinalSequenceScorer):
         return average_log_probs
 
 
+# 对束搜索期间对输出预测的类别概率施加约束的抽象类
 class Constraint:
     """
     An abstract class that can be used to enforce constraints on the output predictions
@@ -590,10 +592,11 @@ class Constraint:
         raise NotImplementedError
 
 
+# N-gram重复约束，作用是在束搜索期间阻止重复的N元组出现在输出序列中
 class RepeatedNGramBlockingConstraint(Constraint):
     def __init__(self, ngram_size: int, **kwargs) -> None:
         super().__init__(**kwargs)
-        self.ngram_size = ngram_size
+        self.ngram_size = ngram_size  # 要防止重复的N元组的大小
 
     def init_state(
         self,
@@ -611,10 +614,10 @@ class RepeatedNGramBlockingConstraint(Constraint):
                 current_prefix = tuple(beam["current_prefix"])
                 seen_ngrams = beam["seen_ngrams"]
                 try:
-                    disallowed_indices = seen_ngrams[current_prefix]
+                    disallowed_indices = seen_ngrams[current_prefix]  # 判断当前前缀current_prefix是否出现过
                     class_log_probabilities[i, j, disallowed_indices] = torch.finfo(
                         class_log_probabilities.dtype
-                    ).min
+                    ).min  # 将出现过的cureent_prefix对应的概率值设置为负无穷，防止继续出现
                 except KeyError:
                     # We have not seen this prefix before, so there is no index
                     # that needs to be blocked
@@ -729,7 +732,7 @@ class BeamSearch:
 
         # shape: (batch_size, beam_size)
         cur_backpointers = backpointers[-1]
-
+        # 从 backpointers 列表的最后一个元素开始，依次向前遍历，逐步重构预测序列
         for timestep in range(len(predictions) - 2, 0, -1):
             # shape: (batch_size, beam_size, 1)
             cur_preds = predictions[timestep].gather(1, cur_backpointers).unsqueeze(2)
@@ -796,11 +799,11 @@ class BeamSearch:
             `(group_size, *)`, where `*` means any other number of dimensions.
 
         """
-        step_signature = signature(step)
+        step_signature = signature(step)  # 获取step函数参数信息
         if len(step_signature.parameters) < 3:
             # If the step function we're given does not take the time step argument, wrap it
             # in one that does.
-            old_step = cast(StepFunctionTypeNoTimestep, step)
+            old_step = cast(StepFunctionTypeNoTimestep, step)  # 如果step函数的输入参数少于三个，将step函数强制转换为StepFunctionTypeNoTimestep
 
             def new_step(last_predictions: torch.Tensor, state: Dict[str, torch.Tensor], time_step: int):
                 del time_step
@@ -898,7 +901,7 @@ class BeamSearch:
         log_probs_after_end[:, self._end_index] = 0.0
 
         # Set the same state for each element in the beam.
-        self._update_initial_state(state, batch_size)
+        self._update_initial_state(state, batch_size)  # 因为是束搜索，将state中的每个初始状态复制到beam_size个
 
         for i, constraint in enumerate(self.constraints):
             constraint_states[i] = constraint.update_state(constraint_states[i], start_predicted_classes)
@@ -1042,7 +1045,7 @@ class BeamSearch:
             all_predictions, 1, sorted_indices.unsqueeze(-1).expand_as(all_predictions)
         )
 
-        return sorted_all_predictions, sorted_final_scores
+        return sorted_all_predictions, sorted_final_scores  # 经过排序后的预测结果和输出
 
     def _update_initial_state(self, state: StateType, batch_size: int):
         """
