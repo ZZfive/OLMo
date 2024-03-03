@@ -7,7 +7,7 @@ from typing import Any, Dict, List, Optional, Tuple
 import torch
 import torch.distributed as dist
 import torch.nn as nn
-from torch.distributed.fsdp import FullyShardedDataParallel
+from torch.distributed.fsdp import FullyShardedDataParallel  # 用于实现全分片数据并行
 from torch.optim.optimizer import Optimizer as OptimizerBase
 
 from . import LayerNormBase
@@ -34,7 +34,7 @@ log = logging.getLogger(__name__)
 
 
 class Optimizer(OptimizerBase):
-    def _clean_param_name(self, name: str) -> str:
+    def _clean_param_name(self, name: str) -> str:  # 去除参数名前面的"_fsdp_wrapped_module."字符串
         return name.replace("_fsdp_wrapped_module.", "")
 
     @torch.no_grad()
@@ -228,7 +228,7 @@ class Optimizer(OptimizerBase):
             return {}
 
     @torch.no_grad()
-    def _do_adaptive_clipping(
+    def _do_adaptive_clipping(  # 自适应梯度剪裁
         self,
         group: Dict[str, Any],
         max_norm_ratio: float,
@@ -272,10 +272,10 @@ class Optimizer(OptimizerBase):
                     state["grad_norm_exp_avg"] = grad_norm_exp_avg
 
             max_allowed_norm = max_norm_ratio * grad_norm_exp_avg
-            clip_coef = max_allowed_norm / (grad_norm + 1e-6)
+            clip_coef = max_allowed_norm / (grad_norm + 1e-6)  # 剪裁系数 clip_coef，即 max_allowed_norm 除以梯度范数加上一个很小的值（避免除零错误
 
             # Clip the gradients and update the exponential average.
-            # Note that multiplying by the clamped coefficient is meaningless when it is
+            # Noe tthat multiplying by the clamped coefficient is meaningless when it is
             # equal to 1, but it avoids the host-device sync that would result from `if clip_coef_clamped < 1`.
             clip_coef_clamped = torch.clamp(clip_coef, max=1.0)
             if p.grad is not None:
@@ -283,7 +283,7 @@ class Optimizer(OptimizerBase):
                 p.grad.detach().mul_(clip_coef_clamped.to(p.grad.device, p.grad.dtype))
 
             # Update the exponential average of the norm of the gradient with the clipped norm of the gradient.
-            grad_norm_exp_avg.lerp_((grad_norm * clip_coef_clamped).to(grad_norm_exp_avg.device), 1 - beta)
+            grad_norm_exp_avg.lerp_((grad_norm * clip_coef_clamped).to(grad_norm_exp_avg.device), 1 - beta)  # 线性插值
             # Alternative: update with the *unclipped* norm of the gradient.
             #  grad_norm_exp_avg.lerp_(grad_norm.to(grad_norm_exp_avg.device), 1 - beta)
 
@@ -295,7 +295,7 @@ class Optimizer(OptimizerBase):
         return num_grads_clipped if collect_param_metrics else None
 
     @torch.no_grad()
-    def _do_global_fixed_clipping(
+    def _do_global_fixed_clipping(  # 全局固定梯度裁剪
         self,
         group: Dict[str, Any],
         max_norm: float,
@@ -322,7 +322,7 @@ class Optimizer(OptimizerBase):
             # equal to 1, but it avoids the host-device sync that would result from `if clip_coef_clamped < 1`.
             if p.grad is not None:
                 # p.grad could be none for some ranks when using FSDP.
-                p.grad.detach().mul_(clip_coef_clamped.to(p.grad.device, p.grad.dtype))
+                p.grad.detach().mul_(clip_coef_clamped.to(p.grad.device, p.grad.dtype))  # 梯度与 clip_coef_clamped 相乘以实现梯度裁剪
         return num_grads_clipped
 
     def get_post_step_metrics(self, module: nn.Module) -> Dict[str, torch.Tensor]:
@@ -343,7 +343,7 @@ class LionW(Optimizer):
         self,
         params,
         lr: float = 1e-4,
-        betas: Tuple[float, float] = (0.9, 0.99),
+        betas: Tuple[float, float] = (0.9, 0.99),  # 一个元组，其中包含两个浮点数值，分别表示优化器的两个 beta 参数的值。通常情况下，这两个参数用于计算梯度的指数移动平均值。这种移动平均可以帮助平稳地更新模型的参数，并且在优化算法中起到了重要的作用
         weight_decay: float = 0.0,
     ):
         assert lr > 0.0
@@ -395,7 +395,7 @@ class LionW(Optimizer):
                 if p.grad is None:
                     continue
 
-                # Perform step weight decay
+                # Perform step weight decay，根据参数组的学习率 group["lr"] 和权重衰减率 group["weight_decay"] 对参数进行衰减
                 p.data.mul_(1 - group["lr"] * group["weight_decay"])
 
                 grad = p.grad
@@ -409,7 +409,7 @@ class LionW(Optimizer):
                 exp_avg = state["exp_avg"]
                 beta1, beta2 = group["betas"]
 
-                # Weight update
+                # Weight update，计算更新值 update 和带符号的更新值 signed_update，并使用它们来更新参数的值
                 update = exp_avg * beta1 + grad * (1 - beta1)
                 signed_update = torch.sign(update)
                 p.add_(signed_update, alpha=-group["lr"])
@@ -454,7 +454,7 @@ class Scheduler(metaclass=ABCMeta):
     def get_lr(self, initial_lr: float, step: int, max_steps: int) -> float:
         raise NotImplementedError
 
-    def _get_max_grad_norm_coeff(
+    def _get_max_grad_norm_coeff(  # 根据指定的初始值、当前步数和总步数，计算并返回最大梯度范数的系数
         self, initial_value: Optional[float], step: int, max_steps: int
     ) -> Optional[float]:
         del max_steps  # might need this in the future, but for now I just wanted to match the API of `get_lr()`.
@@ -479,31 +479,32 @@ class Scheduler(metaclass=ABCMeta):
     ) -> Optional[float]:
         return self._get_max_grad_norm_coeff(initial_max_grad_norm_ratio, step, max_steps)
 
+    # 用于执行线性预热，根据指定的初始学习率、当前步数和预热步数，计算并返回预热后的学习率
     def _linear_warmup(self, initial_lr: float, step: int, warmup_steps: int = 2000) -> float:
         return initial_lr * (0.1 + 0.9 * min(step, warmup_steps) / warmup_steps)
 
 
 @dataclass
-class CosWithWarmup(Scheduler):
-    warmup_steps: int
-    alpha_f: float = 0.1
-    t_max: Optional[int] = None
+class CosWithWarmup(Scheduler):  # 带有线性预热的余弦退火学习率调度器
+    warmup_steps: int  # 预热步数，即学习率线性增加的步数
+    alpha_f: float = 0.1  # 最小学习率相对于初始学习率的比例，默认为 0.1
+    t_max: Optional[int] = None  # 余弦退火调度的最大步数。默认为 None，此时将使用 `max_steps`
 
     def get_lr(self, initial_lr: float, step: int, max_steps: int) -> float:
         max_steps = max_steps if self.t_max is None else self.t_max
-        eta_min = initial_lr * self.alpha_f
+        eta_min = initial_lr * self.alpha_f  # 计算最小学习率
         if step < self.warmup_steps:
-            return self._linear_warmup(initial_lr, step, self.warmup_steps)
+            return self._linear_warmup(initial_lr, step, self.warmup_steps)  # # 线性预热阶段
         elif step >= max_steps:
-            return eta_min
-        else:
+            return eta_min  # 达到 max_steps 后，返回最小学习率
+        else:  # 余弦退火阶段
             step = step - self.warmup_steps
             max_steps = max_steps - self.warmup_steps
             return eta_min + (initial_lr - eta_min) * (1 + cos(pi * step / max_steps)) / 2
 
 
 @dataclass
-class LinearWithWarmup(Scheduler):
+class LinearWithWarmup(Scheduler):  # 带有线性预热的线性学习率调度器
     warmup_steps: int
     alpha_f: float = 0.1
     t_max: Optional[int] = None
@@ -522,7 +523,7 @@ class LinearWithWarmup(Scheduler):
 
 
 @dataclass
-class InvSqrtWithWarmup(Scheduler):
+class InvSqrtWithWarmup(Scheduler):   # 带有线性预热的倒数平方根学习率调度器
     warmup_steps: int
 
     def get_lr(self, initial_lr: float, step: int, max_steps: int) -> float:
@@ -533,7 +534,7 @@ class InvSqrtWithWarmup(Scheduler):
 
 
 @dataclass
-class MaxScheduler(Scheduler):
+class MaxScheduler(Scheduler):  # 两个调度器中学习率的最大值调度器
     sched1: Scheduler
     sched2: Scheduler
 
@@ -544,11 +545,12 @@ class MaxScheduler(Scheduler):
 
 
 @dataclass
-class BoltOnWarmupScheduler(Scheduler):
-    inner: Scheduler
-    warmup_start: int
-    warmup_end: int
+class BoltOnWarmupScheduler(Scheduler):  # 添加额外的热身训练（Warmup）阶段的调度器
+    inner: Scheduler  # 被包装的调度器
+    warmup_start: int  # 热身训练开始的步数
+    warmup_end: int  # 热身训练结束的步数
 
+    # 将指定的调度器inner包装成一个带有warmup训练的调度器
     @classmethod
     def wrap(cls, scheduler: Scheduler, warmup_start: int, warmup_end: int) -> "BoltOnWarmupScheduler":
         return cls(
@@ -568,14 +570,14 @@ class BoltOnWarmupScheduler(Scheduler):
         else:
             return self.inner.get_lr(initial_lr, step, max_steps)
 
-    def _get_max_grad_norm_coeff(
+    def _get_max_grad_norm_coeff(  # 使用指定的调度器inner返回最大梯度范数的系数
         self, initial_value: Optional[float], step: int, max_steps: int
     ) -> Optional[float]:
         return self.inner._get_max_grad_norm_coeff(initial_value, step, max_steps)
 
 
 @dataclass
-class ConstantScheduler(Scheduler):
+class ConstantScheduler(Scheduler):  # 学习率保持不变的调度器
     def get_lr(self, initial_lr: float, step: int, max_steps: int) -> float:
         del step, max_steps
         return initial_lr
@@ -586,7 +588,7 @@ PARAM_GROUP_FIELDS = ("sharded", "max_grad_norm", "max_grad_norm_ratio", "param_
 
 def get_param_groups(cfg: TrainConfig, model: nn.Module) -> List[Dict[str, Any]]:
     """
-    Separate parameters into weight decay and non weight decay groups.
+    Separate parameters into weight decay and non weight decay groups. 根据给定的配置和模型将参数分成需要权重衰减和不需要权重衰减的两组
     """
     param_groups: List[Dict[str, Any]]
     param_group_defaults = {
@@ -668,7 +670,7 @@ def get_param_groups(cfg: TrainConfig, model: nn.Module) -> List[Dict[str, Any]]
 
 def fix_optim_state_dict(optimizer: Optimizer, state_dict: Dict[str, Any]) -> Dict[str, Any]:
     """
-    Make sure old optim state dicts are compatible with new versions.
+    Make sure old optim state dicts are compatible with new versions. 用于兼容旧版本优化器状态字典与新版本优化器兼容的问题
     """
     if len(state_dict["param_groups"]) == 1 and len(optimizer.param_groups) == 2:
         assert optimizer.param_groups[1]["weight_decay"] == 0.0
@@ -697,6 +699,7 @@ def fix_optim_state_dict(optimizer: Optimizer, state_dict: Dict[str, Any]) -> Di
     return state_dict
 
 
+# 构建优化器
 def build_optimizer(cfg: TrainConfig, model: nn.Module) -> Optimizer:
     param_groups = get_param_groups(cfg, model)
     log.info(f"Constructing optimizer with {len(param_groups)} param groups")
@@ -719,6 +722,7 @@ def build_optimizer(cfg: TrainConfig, model: nn.Module) -> Optimizer:
         raise NotImplementedError
 
 
+# 构建调度器
 def build_scheduler(cfg: TrainConfig, sched_cfg: Optional[SchedulerConfig] = None) -> Scheduler:
     sched_cfg = sched_cfg if sched_cfg is not None else cfg.scheduler
     if sched_cfg.name == SchedulerType.cosine_with_warmup:
